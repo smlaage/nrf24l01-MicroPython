@@ -12,7 +12,7 @@ SLW 02/2024
 
 import utime
 from machine import Pin, SPI, PWM
-from nrf24l01 import NRF24L01, POWER_1, POWER_2, SPEED_250K
+from nrf24l01 import NRF24L01, POWER_1, POWER_2, POWER_3, SPEED_250K
 from micropython import const
 
 # Constants
@@ -22,30 +22,37 @@ TIMEOUT = const(50)
 SERVO_MIN, SERVO_MAX = const(1000), const(9000)
 
 
+def set_error():
+    """ Sets the control led to indicate that something went wrong """
+    ctrl_led_green.value(0)
+    ctrl_led_red.value(1)
+
+
+def clear_error():
+    """ Sets the control led showing that everything is fine """
+    ctrl_led_green.value(1)
+    ctrl_led_red.value(0)
+
+
 def get_data():
     """ Sends 'D' to the server and waits for joystick and button data from server.
         Returns success, x, y buttons"""
-    send_buf = bytearray((0, 0, 0, 0, 0, 0, 0, 0))
     nrf.stop_listening()
-    failure = False
+    send_buf = bytearray((ord('D'), 0, 0, 0, 0, 0, 0, 0))
+    success = True
     x, y, buttons = 0, 0, 0
     
-    # Send a data request
-    ctrl_led_green.value(1)
+    # Send a request for data
     try:
-        send_buf[0] = ord('D')
         nrf.send(send_buf)
     except OSError:
         print("Send failure")
-        ctrl_led_red.value(1)
-        failure = True
-    else:
-        ctrl_led_red.value(0)
+        success = False
+    
+    nrf.start_listening()
         
-    if not failure:
-              
+    if success:            
         # Wait for response with TIMEOUT
-        nrf.start_listening()
         start_time = utime.ticks_ms()
         timeout = False
         while not nrf.any() and not timeout:
@@ -55,39 +62,46 @@ def get_data():
 
         if timeout:
             print("Timout failure")
-            ctrl_led_red.value(1)
-            failure = True
+            success = False
         else:
-            ctrl_led_red.value(0)
             recv_buf = nrf.recv()
             x = 256 * recv_buf[0] + recv_buf[1]
             y = 256 * recv_buf[2] + recv_buf[3]
             buttons = recv_buf[4]
-    ctrl_led_green.value(0)
-    return not failure, x, y, buttons
+    
+    if success:
+        clear_error()
+    else:
+        set_error()
+    
+    return success, x, y, buttons
 
 
 def set_led(status):
     """ Sends 'L' to the server followed by a byte indicating the LED status
-        (0 -> off, anything else -> on) """
+        0 -> off, anything else -> on
+        Returns success (True -> okay, False -> failure) """
     
-    send_buf = bytearray((ord('L'), status, 0, 0, 0, 0, 0, 0))  
     nrf.stop_listening()
-    failure = False
+    send_buf = bytearray((ord('L'), status, 0, 0, 0, 0, 0, 0))  
+    success = True
         
     # Send led status
-    ctrl_led_green.value(1)
     try:
         nrf.send(send_buf)
     except OSError:
         print("Send failure")
-        ctrl_led_red.value(1)
-        failure = True
-    else:
-        ctrl_led_red.value(0)
+        success = True
     
     nrf.start_listening()
-    return failure
+    
+    if success:
+        clear_error()
+    else:
+        set_error()
+        
+    return success
+
 
 # main program starts here ----------------------------------------
 
@@ -130,13 +144,13 @@ while True:
     
     success, x, y, buttons = get_data()
     if success:
-        # print(x, y, buttons)
         servo_pos = round(SERVO_MIN + (SERVO_MAX - SERVO_MIN) * x / 65536)
         servo.duty_u16(servo_pos)
+    
     utime.sleep_ms(LOOP_DELAY)
     
     if bt.value() != bt_old:
-        print("Sending button", bt.value())
-        set_led(not bt.value())
         bt_old = bt.value()
+        print("Sending button", bt.value())
+        success = set_led(not bt.value())
         utime.sleep_ms(LOOP_DELAY)
