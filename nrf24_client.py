@@ -12,14 +12,22 @@ SLW 02/2024
 
 import utime
 from machine import Pin, SPI, PWM
-from nrf24l01 import NRF24L01, POWER_1, POWER_2, POWER_3, SPEED_250K
+from nrf24l01 import NRF24L01, POWER_0, POWER_1, POWER_2, POWER_3, \
+                     SPEED_250K, SPEED_1M
 from micropython import const
 
 # Constants
-POLL_DELAY = const(5)
-LOOP_DELAY = const(50)
-TIMEOUT = const(50)
+CHANNEL = const(103)
+PAYLOAD_SIZE = const(6)
+POWER = POWER_3
+POWER_DCT = {POWER_0: "Power 0: -18 dBm",
+             POWER_1: "Power 1: -12 dBm",
+             POWER_2: "Power 2:  -6 dBm",
+             POWER_3: "Power 3:   0 dBm"}
 SERVO_MIN, SERVO_MAX = const(1000), const(9000)
+# Timing
+LOOP_DELAY = const(100)
+RECEIVE_DELAY = const(10)
 
 
 def set_error():
@@ -38,7 +46,8 @@ def get_data():
     """ Sends 'D' to the server and waits for joystick and button data from server.
         Returns success, x, y buttons"""
     nrf.stop_listening()
-    send_buf = bytearray((ord('D'), 0, 0, 0, 0, 0, 0, 0))
+    send_buf = bytearray(PAYLOAD_SIZE)
+    send_buf[0] = ord('D')
     success = True
     x, y, buttons = 0, 0, 0
     
@@ -46,28 +55,32 @@ def get_data():
     try:
         nrf.send(send_buf)
     except OSError:
-        print("Send failure")
+        print("get_data: send failure")
         success = False
-    
+        
     nrf.start_listening()
         
-    if success:            
-        # Wait for response with TIMEOUT
-        start_time = utime.ticks_ms()
-        timeout = False
-        while not nrf.any() and not timeout:
-            if utime.ticks_diff(utime.ticks_ms(), start_time) > TIMEOUT:
-                timeout = True
-            utime.sleep_ms(POLL_DELAY)
-
-        if timeout:
-            print("Timout failure")
-            success = False
-        else:
+    if success:
+        # First attempt ...
+        utime.sleep_ms(RECEIVE_DELAY)
+        if nrf.any():
             recv_buf = nrf.recv()
             x = 256 * recv_buf[0] + recv_buf[1]
             y = 256 * recv_buf[2] + recv_buf[3]
             buttons = recv_buf[4]
+        else:
+            print("get_data: 1st timeout")
+            set_error()
+            # Second attempt
+            utime.sleep_ms(RECEIVE_DELAY)
+            if nrf.any():
+                recv_buf = nrf.recv()
+                x = 256 * recv_buf[0] + recv_buf[1]
+                y = 256 * recv_buf[2] + recv_buf[3]
+                buttons = recv_buf[4]
+            else:
+                print("get_data: 2nd timeout - failure")
+                success = False
     
     if success:
         clear_error()
@@ -83,14 +96,16 @@ def set_led(status):
         Returns success (True -> okay, False -> failure) """
     
     nrf.stop_listening()
-    send_buf = bytearray((ord('L'), status, 0, 0, 0, 0, 0, 0))  
+    send_buf = bytearray(PAYLOAD_SIZE)
+    send_buf[0] = ord('L')
+    send_buf[1] = status
     success = True
         
     # Send led status
     try:
         nrf.send(send_buf)
     except OSError:
-        print("Send failure")
+        print("set_led: send failure")
         success = True
     
     nrf.start_listening()
@@ -107,6 +122,8 @@ def set_led(status):
 
 # Global variables
 bt_old = 1
+success_cnt, error_cnt = 0, 0
+errors_in_a_row = 0
 
 # Initiate buttons, LEDs and servo
 ctrl_led_green = Pin(18, Pin.OUT)
@@ -119,13 +136,12 @@ servo.freq(50)
 spi = SPI(0, sck=Pin(6), mosi=Pin(7), miso=Pin(4))
 cfg = {"spi": spi, "miso": 4, "mosi": 7, "sck": 6, "csn": 14, "ce": 17}
 pipes = ("RCar1".encode('utf-8'), "RCar2".encode('utf-8'))
-channel = 105
 csn = Pin(cfg["csn"], mode=Pin.OUT, value=1)
 ce = Pin(cfg["ce"], mode=Pin.OUT, value=0)
 spi = cfg["spi"]
-nrf = NRF24L01(spi, csn, ce, payload_size=8)
-nrf.set_channel(channel)
-nrf.set_power_speed(POWER_2, SPEED_250K)
+nrf = NRF24L01(spi, csn, ce, payload_size=PAYLOAD_SIZE)
+nrf.set_channel(CHANNEL)
+nrf.set_power_speed(POWER, SPEED_250K)
 nrf.open_tx_pipe(pipes[0])
 nrf.open_rx_pipe(1, pipes[1])
 nrf.start_listening()
@@ -138,19 +154,42 @@ ctrl_led_green.value(1)
 utime.sleep_ms(200)
 ctrl_led_green.value(0)
 
-print("NRF24L01 client sending on channel", channel)
+# Start the client
+print("NRF24L01 client sending on channel", CHANNEL)
+print(POWER_DCT[POWER])
 
-while True:
-    
-    success, x, y, buttons = get_data()
-    if success:
-        servo_pos = round(SERVO_MIN + (SERVO_MAX - SERVO_MIN) * x / 65536)
-        servo.duty_u16(servo_pos)
-    
-    utime.sleep_ms(LOOP_DELAY)
-    
-    if bt.value() != bt_old:
-        bt_old = bt.value()
-        print("Sending button", bt.value())
-        success = set_led(not bt.value())
+try:
+    while True:
+        
+        success, x, y, buttons = get_data()
+        if success:
+            servo_pos = round(SERVO_MIN + (SERVO_MAX - SERVO_MIN) * x / 65536)
+            servo.duty_u16(servo_pos)
+            errors_in_a_row = 0
+            success_cnt += 1
+        else:
+            errors_in_a_row += 1
+            error_cnt += 1
+            print("Error Cnt:", error_cnt)
+        
         utime.sleep_ms(LOOP_DELAY)
+        
+        if bt.value() != bt_old:
+            bt_old = bt.value()
+            print("Sending button", bt.value())
+            success = set_led(not bt.value())
+            utime.sleep_ms(LOOP_DELAY)
+            
+        if errors_in_a_row >= 10:
+            print("NRF24L01 client: too many errors! Client stopped!")
+            break
+        
+except KeyboardInterrupt:
+    pass
+
+ctrl_led_green.value(0)
+ctrl_led_red.value(0)
+print()
+print("Successes:", success_cnt,
+      "  Errors:", error_cnt,
+      "  Percent:", round(success_cnt * 100 / (success_cnt + error_cnt), 2))
