@@ -17,9 +17,9 @@ from nrf24l01 import NRF24L01, POWER_0, POWER_1, POWER_2, POWER_3, \
 from micropython import const
 
 # Constants
-CHANNEL = const(103)
+CHANNEL = const(95)
 PAYLOAD_SIZE = const(6)
-POWER = POWER_3
+POWER = POWER_1
 POWER_DCT = {POWER_0: "Power 0: -18 dBm",
              POWER_1: "Power 1: -12 dBm",
              POWER_2: "Power 2:  -6 dBm",
@@ -27,7 +27,9 @@ POWER_DCT = {POWER_0: "Power 0: -18 dBm",
 SERVO_MIN, SERVO_MAX = const(1000), const(9000)
 # Timing
 LOOP_DELAY = const(100)
-RECEIVE_DELAY = const(10)
+POLL_DELAY = const(3)
+TIMEOUT_CNT = const(20)
+MAX_ERROR = const(20)
 
 
 def set_error():
@@ -61,27 +63,21 @@ def get_data():
     nrf.start_listening()
         
     if success:
-        # First attempt ...
-        utime.sleep_ms(RECEIVE_DELAY)
-        if nrf.any():
-            recv_buf = nrf.recv()
-            x = 256 * recv_buf[0] + recv_buf[1]
-            y = 256 * recv_buf[2] + recv_buf[3]
-            buttons = recv_buf[4]
-        else:
-            print("get_data: 1st timeout")
-            set_error()
-            # Second attempt
-            utime.sleep_ms(RECEIVE_DELAY)
+        for cnt in range(TIMEOUT_CNT):
             if nrf.any():
                 recv_buf = nrf.recv()
                 x = 256 * recv_buf[0] + recv_buf[1]
                 y = 256 * recv_buf[2] + recv_buf[3]
                 buttons = recv_buf[4]
+                break
             else:
-                print("get_data: 2nd timeout - failure")
-                success = False
-    
+                utime.sleep_ms(POLL_DELAY)
+        if cnt > 5:
+            print(cnt)
+        if cnt >= TIMEOUT_CNT - 1:
+            print("get_data: timeout")
+            success = False
+
     if success:
         clear_error()
     else:
@@ -180,7 +176,7 @@ try:
             success = set_led(not bt.value())
             utime.sleep_ms(LOOP_DELAY)
             
-        if errors_in_a_row >= 10:
+        if errors_in_a_row >= MAX_ERROR:
             print("NRF24L01 client: too many errors! Client stopped!")
             break
         

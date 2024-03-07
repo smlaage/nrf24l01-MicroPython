@@ -22,15 +22,15 @@ from nrf24l01 import NRF24L01, POWER_0, POWER_1, POWER_2, POWER_3, \
 from micropython import const
 
 # Constants
-CHANNEL = const(103)
+CHANNEL = const(95)
 PAYLOAD_SIZE = const(6)
-POWER = POWER_3
+POWER = POWER_1
 POWER_DCT = {POWER_0: "Power 0: -18 dBm",
              POWER_1: "Power 1: -12 dBm",
              POWER_2: "Power 2:  -6 dBm",
              POWER_3: "Power 3:   0 dBm"}
 # Timing
-POLL_DELAY = const(5)
+POLL_DELAY = const(3)
 SEND_DELAY = const(4)
 
 
@@ -134,7 +134,6 @@ try:
     while True:
         
         if nrf.any():
-            last_connection = utime.ticks_ms()
             recv_buf = nrf.recv()
             cmd = chr(recv_buf[0])
             
@@ -151,9 +150,10 @@ try:
             else:
                 print("Command not recognized:", cmd)
         
+            last_connection = utime.ticks_ms()
+            
         utime.sleep_ms(POLL_DELAY)
         if utime.ticks_ms() > last_connection + 1000:
-            # Switch off control leds
             ctrl_led_green.value(0)
             ctrl_led_red.value(0)
             
